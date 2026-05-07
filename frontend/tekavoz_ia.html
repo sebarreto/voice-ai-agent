@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Teka Home - Asistente de Cocina</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/microsoft-cognitiveservices-speech-sdk/distrib/browser/microsoft.cognitiveservices.speech.sdk.bundle.js"></script>
+    <style>
+		body {
+			font-family: 'Roboto', Arial, sans-serif;
+			background: linear-gradient(135deg, #f7f7f7, #eaeaea);
+			margin: 0;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			height: 100vh;
+		}
+
+		/* Main app card */
+		.app {
+			width: 360px;
+			background: white;
+			border-radius: 20px;
+			box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+			overflow: hidden;
+		}
+
+		/* Header */
+		header {
+			background: #b01b2e;
+			color: white;
+			padding: 16px;
+			font-weight: 600;
+			text-align: center;
+		}
+
+		/* Avatar */
+		.avatar {
+			width: 90px;
+			height: 90px;
+			margin: 20px auto;
+			border-radius: 50%;
+			background: url('https://cdn-icons-png.flaticon.com/512/147/147144.png') center/cover;
+			transition: all 0.3s ease;
+		}
+
+		.avatar.listening {
+			box-shadow: 0 0 20px rgba(176,27,46,0.6);
+			transform: scale(1.1);
+		}
+
+		/* Chat */
+		.chat {
+			height: 250px;
+			overflow-y: auto;
+			padding: 10px;
+		}
+
+		/* Messages */
+		.message {
+			padding: 10px 14px;
+			border-radius: 18px;
+			margin: 6px 0;
+			max-width: 75%;
+			animation: fadeIn 0.3s ease;
+		}
+
+		.user-message {
+			background: #b01b2e;
+			color: white;
+			margin-left: auto;
+		}
+
+		.bot-message {
+			background: #f1f1f1;
+		}
+
+		/* Animation */
+		@keyframes fadeIn {
+			from { opacity: 0; transform: translateY(5px); }
+			to { opacity: 1; transform: translateY(0); }
+		}
+
+		/* Status text */
+		.status {
+			text-align: center;
+			font-size: 0.9em;
+			color: #666;
+			margin-bottom: 10px;
+		}
+
+		/* Mic button */
+		.mic-button {
+			width: 70px;
+			height: 70px;
+			background: #b01b2e;
+			border-radius: 50%;
+			margin: 10px auto 20px;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			color: white;
+			font-size: 26px;
+			cursor: pointer;
+			transition: 0.3s;
+		}
+
+		.mic-button:hover {
+			background: #910e20;
+		}
+
+		.mic-button.active {
+			background: #2ecc71;
+		}
+    </style>
+</head>
+<body>
+	<div class="app">
+		<header>🍳 Smart Cooking Assistant</header>
+
+		<div class="avatar" id="avatar"></div>
+		<div class="status" id="status">Tap to speak</div>
+
+		<div class="chat" id="chat"></div>
+
+		<div class="mic-button" id="micButton">🎤</div>
+	</div>
+
+    <script>
+	    const serviceRegion = "eastus";
+        const chat = document.getElementById("chat");
+        const avatar = document.getElementById("avatar");
+		let speechConfig;
+		let recognizer;
+		let synthesizer;
+        let isListening = false;
+		let recognitionActive = false;
+		let isSpeaking = false;
+
+		async function initSpeechSDK() {
+			speechConfig = await getSpeechConfig();
+
+			const audioConfig = SpeechSDK.AudioConfig.fromDefaultMicrophoneInput();
+
+			recognizer = new SpeechSDK.SpeechRecognizer(
+				speechConfig,
+				audioConfig
+			);
+
+			synthesizer = new SpeechSDK.SpeechSynthesizer(
+				speechConfig
+			);
+
+			recognizer.canceled = (s, e) => {
+				console.error("Speech canceled:", e.reason, e.errorDetails);
+			};
+
+			recognizer.recognized = async (s, e) => {
+
+				if (isSpeaking) return;
+
+				if (
+					e.result.reason === SpeechSDK.ResultReason.RecognizedSpeech &&
+					isListening
+				) {
+
+					const command = e.result.text.trim();
+
+					if (!command || command.length < 4) {
+						console.log("Ignored noise:", command);
+						return;
+					}
+
+					addMessage(command, true);
+
+					stopRecognition();
+
+					avatar.classList.remove("listening");
+					statusText.textContent = "Thinking...";
+
+					const response = await fetch("http://192.168.8.101:5000/api/chat", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ question: command })
+					});
+
+					if (!response.ok) {
+						console.error("Server error:", await response.text());
+						return;
+					}
+
+					const data = await response.json();
+					const answer = data.answer;
+
+					addMessage(answer, false);
+
+					speakText(answer);
+
+				}
+			};
+
+			console.log("Speech SDK initialized");
+		}
+
+		async function getSpeechConfig() {
+			const response = await fetch("http://localhost:5000/api/speech-token");
+			const data = await response.json();
+
+			const speechConfig = SpeechSDK.SpeechConfig.fromAuthorizationToken(
+				data.token,
+				data.region
+			);
+
+			speechConfig.speechRecognitionLanguage = "en-US";
+			speechConfig.speechSynthesisVoiceName = "en-US-JennyNeural";
+			return speechConfig;
+		}
+		
+        function addMessage(text, isUser) {
+            const message = document.createElement("div");
+            message.classList.add("message", isUser ? "user-message" : "bot-message");
+            message.textContent = text;
+            chat.appendChild(message);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+		function startRecognition() {
+			console.log("Recognition started");
+			if (!recognitionActive) {
+				recognitionActive = true;
+				recognizer.startContinuousRecognitionAsync();
+			}
+		}
+
+		function stopRecognition(callback) {
+
+			console.log("Recognition stopped");
+
+			if (recognitionActive) {
+
+				recognizer.stopContinuousRecognitionAsync(() => {
+
+					recognitionActive = false;
+
+					avatar.classList.remove("listening");
+
+					if (callback) callback();
+				});
+			}
+}
+
+		function speakText(text) {
+
+			isSpeaking = true;
+
+			statusText.textContent = "Speaking...";
+			avatar.classList.remove("listening");
+
+			synthesizer.speakTextAsync(
+
+				text,
+
+				result => {
+
+					console.log("Speech finished");
+
+					isSpeaking = false;
+
+					// 👇 volver a escuchar automáticamente
+					if (isListening) {
+
+						statusText.textContent = "Listening...";
+
+						avatar.classList.add("listening");
+
+						startRecognition();
+					}
+				},
+
+				error => {
+
+					console.error("TTS Error:", error);
+
+					isSpeaking = false;
+				}
+			);
+		}
+		
+		const micButton = document.getElementById("micButton");
+		const statusText = document.getElementById("status");
+
+		statusText.textContent = "Tap to speak";
+
+		micButton.addEventListener("click", () => {
+
+			console.log("Mic clicked");
+
+			// START
+			if (!isListening) {
+
+				isListening = true;
+
+				statusText.textContent = "Listening...";
+
+				avatar.classList.add("listening");
+
+				micButton.classList.add("active");
+
+				startRecognition();
+			}
+
+			// STOP
+			else {
+
+				isListening = false;
+
+				stopRecognition();
+
+				statusText.textContent = "Tap to speak";
+
+				avatar.classList.remove("listening");
+
+				micButton.classList.remove("active");
+			}
+		});
+
+		initSpeechSDK();
+    </script>
+</body>
+</html>
