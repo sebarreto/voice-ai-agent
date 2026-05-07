@@ -24,7 +24,7 @@ Done!!!
 
 ### 6. Run backend
 python backend/backend.py
-Check IP
+Check IP!!! front-end is looking for http://192.168.8.101:5000
 
 ### 7. Open frontend
 Open frontend/tekavoz_ia.html in a browser
