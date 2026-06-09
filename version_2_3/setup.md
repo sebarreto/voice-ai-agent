@@ -30,7 +30,7 @@
 9. Wait for warm-up process and use
 
 ## Hardware configuration:
-/voice-ai-agent/version_2_3/schematics_version_2_3.jpg
+![Schematics](schematics_version_2_3.jpg)
 - led (longer leg) -> PIN 4 
 - I2S ws (mic & speaker) -> PIN18
 - I2S sd (mic) -> PIN16
