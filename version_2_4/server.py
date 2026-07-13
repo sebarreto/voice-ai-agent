@@ -352,13 +352,10 @@ Question:
 # ================= TTS =================
 
 async def tts_stream(text: str):
+
     speech_config = speechsdk.SpeechConfig(
         subscription=SPEECH_KEY,
         region=SPEECH_REGION
-    )
-
-    speech_config.set_speech_synthesis_output_format(
-        speechsdk.SpeechSynthesisOutputFormat.Raw16Khz16BitMonoPcm
     )
 
     synthesizer = speechsdk.SpeechSynthesizer(
@@ -366,30 +363,22 @@ async def tts_stream(text: str):
         audio_config=None
     )
 
-    # Start synthesis
-    result = await asyncio.to_thread(
-        synthesizer.speak_text_async(text).get
-    )
-
-    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-        print("❌ TTS failed")
-        return
-
-    # Create stream reader
+    result = synthesizer.start_speaking_text_async(text).get()
     stream = speechsdk.AudioDataStream(result)
 
-    buffer = bytes(1024)  # IMPORTANT: immutable bytes, NOT bytearray
-
     while True:
+        buffer = bytes(4096)
         size = stream.read_data(buffer)
-
-        if size == 0:
+        if size <= 0:
             break
-
-        yield buffer[:size]
-
-        await asyncio.sleep(0)
-
+        chunk = buffer[:size]
+        if not chunk:
+            break
+        yield chunk
+# ================= TEST =================
+@app.get("/test")
+def test():
+    return {"status": "ok"}
 # ================= WEBSOCKET =================
 @app.websocket("/ws/audio")
 async def websocket_audio(ws: WebSocket):
@@ -426,7 +415,7 @@ async def websocket_audio(ws: WebSocket):
 
     stop_requested = False
 
-    STOP_WORDS = {"stop", "cancel", "enough", "shut up", "quiet", "silence"}
+    STOP_WORDS = {"goodbye assistant", "go to sleep assistant", "enough assistant", "shut up assistant", "quiet assistant", "silence assistant", "stop talking assistant", "stop assistant", "sleep assistant", "bye assistant", "see you later assistant"}
 
     ws_lock = asyncio.Lock()
 
@@ -445,7 +434,8 @@ async def websocket_audio(ws: WebSocket):
             if any(word in text_clean for word in STOP_WORDS):
                 print("🛑 Stop requested")
                 stop_requested = True
-                loop.call_soon_threadsafe(control_queue.put_nowait, "STOP_AUDIO")
+                is_activated = False
+                loop.call_soon_threadsafe(control_queue.put_nowait, "SLEEP")
                 return
 
             if not is_activated:
@@ -551,7 +541,6 @@ async def websocket_audio(ws: WebSocket):
                 if not aborted:
                     async with ws_lock:
                         await ws.send_text("END_AUDIO")
-
             except Exception as e:
                 import traceback
                 print(f"⚠️ process error: {e}")
@@ -561,7 +550,8 @@ async def websocket_audio(ws: WebSocket):
                         await ws.send_bytes(chunk)
                 except:
                     pass
-
+            finally:
+                await ws.send_text("END_AUDIO")
     async def session_watcher():
         nonlocal is_activated
         while True:
