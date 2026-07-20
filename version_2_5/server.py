@@ -179,18 +179,23 @@ You control these appliances:
 - LIGHT (on/off)
 - AC (on/off, temperature in celsius)
 
-Given the user's message and current house state, infer what environment changes would improve their comfort or mood.
-Return ONLY a JSON array of actions, no explanation, no markdown.
+Understand both literal and figurative language:
+- "under the weather" = feeling ill/unwell → quiet dim environment
+- "burning up" = feeling very hot → not literally on fire
+- "freezing" = feeling cold → not literally frozen
+- "can't see a thing" = too dark → light on
+- "it's like a sauna" = too hot → AC on low temperature
 
-Emotional mappings to use as guidance:
-- tired / sleepy → dim light off, AC to 23
-- sad / depressed → light on (warm presence), AC to 23
-- hot / uncomfortable heat → AC to 21
-- cold / freezing → AC to 26
-- happy / energetic → light on, AC to 22
-- focused / working → light on, AC to 22
-- relaxing → light off, AC to 23
-- anxious / stressed → light off, AC to 23
+Emotional/physical state mappings:
+- tired / sleepy / exhausted → light off, AC to 23
+- sad / depressed / down → light on, AC to 23
+- ill / sick / unwell / under the weather / not feeling well → light off, AC to 24
+- hot / warm / burning up / sweating → AC to 21
+- cold / freezing / chilly / shivering → AC to 26
+- happy / energetic / great → light on, AC to 22
+- focused / working / studying → light on, AC to 22
+- relaxing / unwinding / chilling → light off, AC to 23
+- anxious / stressed / overwhelmed → light off, AC to 23
 
 Possible intents:
 - LIGHT_ON
@@ -204,28 +209,24 @@ Possible intents:
 Rules:
 - Return an array even for a single action: [{"intent": "LIGHT_ON"}]
 - For NONE return: [{"intent": "NONE"}]
-- Only include actions that make sense given the current state (don't turn off what's already off)
+- Only include actions that make sense given current state
+- Understand idioms and figurative speech naturally
 - Never return anything except the JSON array
 
 Examples:
-"turn on the light" → [{"intent": "LIGHT_ON"}]
-"I'm freezing" → [{"intent": "SET_AC", "temperature": 26}]
-"I feel tired" → [{"intent": "LIGHT_OFF"}, {"intent": "SET_AC", "temperature": 23}]
-"I'm sad" → [{"intent": "LIGHT_ON"}, {"intent": "SET_AC", "temperature": 23}]
+"I feel under the weather" → [{"intent": "LIGHT_OFF"}, {"intent": "SET_AC", "temperature": 24}]
+"it's like a sauna in here" → [{"intent": "SET_AC", "temperature": 20}]
+"I can't see a thing" → [{"intent": "LIGHT_ON"}]
+"I'm burning up" → [{"intent": "SET_AC", "temperature": 21}]
 "how do I clean the oven?" → [{"intent": "NONE"}]
 """
 
 async def classify_intent(text: str):
     try:
-        # Inject current house state so LLM avoids redundant actions
         state_context = f"""
 Environment:
 {build_env_summary()}
-Current house state:
-- Light: {"ON" if house_state["light"] else "OFF"}
-- AC: {"ON at " + str(house_state["ac_temp"]) + "°C" if house_state["ac_power"] else "OFF"}
 """
-
         response = await asyncio.to_thread(
             client.chat.completions.create,
             model="gpt-4o-mini",
@@ -242,10 +243,20 @@ Current house state:
 
         import json
         result = json.loads(raw)
-
-        # Handle both array and single object responses defensively
         if isinstance(result, dict):
             result = [result]
+
+        # ← NEW: if NONE but text sounds personal/emotional, try reasoning pass
+        if len(result) == 1 and result[0].get("intent") == "NONE":
+            if any(w in text.lower() for w in [
+                "feel", "feeling", "i'm", "i am", "tired", "sick",
+                "cold", "hot", "sad", "stressed", "weather", "unwell"
+            ]):
+                print("🔄 Retrying with explicit reasoning...")
+                result = await classify_with_reasoning(text, state_context)
+
+            if not result:
+                return None
 
         if len(result) == 1 and result[0].get("intent") == "NONE":
             return None
@@ -256,138 +267,48 @@ Current house state:
         print(f"⚠️ Intent classification failed: {e}")
         return None
 
-def fast_intent(text: str):
 
-    text = text.lower()
+async def classify_with_reasoning(text: str, state_context: str):
+    """Second pass: ask LLM to reason step by step before classifying."""
+    try:
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a smart home assistant. "
+                        "First reason briefly about how the user feels and what environment would help them. "
+                        "Then return ONLY a JSON array of smart home actions.\n"
+                        "Format:\n"
+                        "Reasoning: <one sentence>\n"
+                        "Actions: <JSON array>"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"{state_context}\nUser said: {text}"
+                }
+            ],
+            max_tokens=100,
+            temperature=0
+        )
 
-    # --------------------
-    # LIGHTS
-    # --------------------
-    LIGHT_ON_PHRASES = [
-        "turn on the light",
-        "it's too dark",
-        "too dark",
-        "more light",
-        "light please",
-        "brighten the room",
-        "make it brighter",
-        "i can't see",
-        "feeling dark",
-        "light on please"
-    ]
+        raw = response.choices[0].message.content.strip()
+        print(f"🔄 Reasoning pass: {raw}")
 
-    LIGHT_OFF_PHRASES = [
-        "turn off the light",
-        "dim the light",
-        "too bright",
-        "less light",
-        "light off please",
-        "make it darker",
-        "darken the room"
-    ]
+        # Parse the Actions: line
+        import json, re
+        match = re.search(r"Actions:\s*(\[.*\])", raw, re.DOTALL)
+        if match:
+            return json.loads(match.group(1))
 
-    if any(x in text for x in LIGHT_ON_PHRASES):
-        return {"intent": "LIGHT_ON"}
+        return None
 
-    if (
-        "light" in text
-        and ("turn on" in text or "start" in text)
-    ):
-        return {
-            "intent": "LIGHT_ON"
-        }
-
-    if any(x in text for x in LIGHT_OFF_PHRASES):
-        return {"intent": "LIGHT_OFF"}
-
-    if (
-        "light" in text
-        and ("turn off" in text or "stop" in text)
-    ):
-        return {
-            "intent": "LIGHT_OFF"
-        }
-
-    if ("is the light on" in text or "light status" in text):
-        return {"intent":"LIGHT_STATUS"}
-    # --------------------
-    # AC
-    # --------------------
-    HOT_PHRASES = [
-        "i feel hot",
-        "too hot",
-        "it's hot",
-        "very hot",
-        "warm here",
-        "cool the room",
-        "cooler please",
-        "I'm hot",
-        "feeling hot",
-        "make it cooler",
-        "lower the temperature"
-    ]
-
-    COLD_PHRASES = [
-        "i feel cold",
-        "too cold",
-        "it's cold",
-        "warm it up",
-        "increase temperature",
-        "heat up the room",
-        "make it warmer",
-        "feeling cold",
-        "too chilly",
-        "it's freezing",
-        "I'm cold",
-        "feeling cold",
-        "raise the temperature"
-    ]
-
-    if any(x in text for x in HOT_PHRASES):
-        return {
-            "intent":"SET_AC",
-            "temperature":22
-        }
-
-    if any(x in text for x in COLD_PHRASES):
-        return {
-            "intent": "SET_AC",
-            "temperature": 25
-        }
-
-    if (
-        "air conditioner" in text
-        and ("turn on" in text or "start" in text)
-    ):
-        return {
-            "intent": "SET_AC",
-            "temperature": house_state["ac_temp"]
-        }
-
-    if (
-        "air conditioner" in text
-        and ("turn off" in text or "stop" in text)
-    ):
-        return {
-            "intent": "AC_OFF"
-        }
-
-    if ("what temperature" in text or "ac status" in text or "air conditioner status" in text):
-        return {"intent":"AC_STATUS"}
-    # --------------------
-    # OLD DEMOS
-    # --------------------
-
-    if text == "turn on":
-        return "Turning on the cooktop"
-
-    if text == "turn off":
-        return "Turning off the cooktop"
-
-    if "power" in text:
-        return "Adjusting power level"
-
-    return None
+    except Exception as e:
+        print(f"⚠️ Reasoning pass failed: {e}")
+        return None
 
 def needs_rag(text: str) -> bool:
     keywords = [
